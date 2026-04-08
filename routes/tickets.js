@@ -5,7 +5,7 @@ const db = require('../config/db');
 // GET all tickets (optional filters: status_id, priority_id, machine_id, assigned_to, created_by)
 router.get('/', async (req, res) => {
   try {
-    const { status_id, priority_id, machine_id, assigned_to, created_by } = req.query;
+    const { status_id, priority_id, machine_id, assigned_to, created_by, type_maintenance } = req.query;
     let query = `
       SELECT t.*, s.name as status_name, p.name as priority_name, m.name as machine_name,
         u1.name as created_by_name, u2.name as assigned_to_name
@@ -23,6 +23,7 @@ router.get('/', async (req, res) => {
     if (machine_id) { conditions.push('t.machine_id = ?'); params.push(machine_id); }
     if (assigned_to) { conditions.push('t.assigned_to = ?'); params.push(assigned_to); }
     if (created_by) { conditions.push('t.created_by = ?'); params.push(created_by); }
+    if (type_maintenance) { conditions.push('t.type_maintenance = ?'); params.push(type_maintenance); }
     if (conditions.length) query += ' WHERE ' + conditions.join(' AND ');
     const [rows] = await db.query(query, params);
     res.json(rows);
@@ -62,17 +63,20 @@ router.post('/', async (req, res) => {
   try {
     const {
       title, description, status_id, priority_id, problem_id,
-      machine_id, organe_id, piece_id, created_by, assigned_to
+      machine_id, organe_id, piece_id, created_by, assigned_to,
+      type_maintenance
     } = req.body;
+    const typeMaintenance = type_maintenance || 'Corrective';
     const [result] = await db.query(
-      `INSERT INTO tickets (title, description, status_id, priority_id, problem_id, machine_id, organe_id, piece_id, created_by, assigned_to)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [title, description, status_id, priority_id, problem_id || null, machine_id, organe_id || null, piece_id || null, created_by || null, assigned_to || null]
+      `INSERT INTO tickets (title, description, status_id, priority_id, problem_id, machine_id, organe_id, piece_id, created_by, assigned_to, type_maintenance)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [title, description, status_id, priority_id, problem_id || null, machine_id, organe_id || null, piece_id || null, created_by || null, assigned_to || null, typeMaintenance]
     );
     res.status(201).json({
       id: result.insertId,
       title, description, status_id, priority_id, problem_id,
-      machine_id, organe_id, piece_id, created_by, assigned_to
+      machine_id, organe_id, piece_id, created_by, assigned_to,
+      type_maintenance: typeMaintenance
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -84,7 +88,7 @@ router.put('/:id', async (req, res) => {
   try {
     const {
       title, description, status_id, priority_id, problem_id,
-      machine_id, organe_id, piece_id, assigned_to
+      machine_id, organe_id, piece_id, assigned_to, type_maintenance
     } = req.body;
     const updates = ['updated_at = NOW()'];
     const values = [];
@@ -97,6 +101,7 @@ router.put('/:id', async (req, res) => {
     if (organe_id !== undefined) { updates.push('organe_id = ?'); values.push(organe_id); }
     if (piece_id !== undefined) { updates.push('piece_id = ?'); values.push(piece_id); }
     if (assigned_to !== undefined) { updates.push('assigned_to = ?'); values.push(assigned_to); }
+    if (type_maintenance !== undefined) { updates.push('type_maintenance = ?'); values.push(type_maintenance); }
     values.push(req.params.id);
     const [result] = await db.query(`UPDATE tickets SET ${updates.join(', ')} WHERE id = ?`, values);
     if (result.affectedRows === 0) return res.status(404).json({ error: 'Ticket not found' });
