@@ -9,9 +9,9 @@ const machinesRouter = require('./routes/machines');
 const organesRouter = require('./routes/organes');
 const piecesRouter = require('./routes/pieces');
 const problemsRouter = require('./routes/problems');
-const prioritiesRouter = require('./routes/priorities');
 const statusesRouter = require('./routes/statuses');
 const ticketsRouter = require('./routes/tickets');
+const domainesRouter = require('./routes/domaines');
 
 app.use(express.json());
 
@@ -25,9 +25,9 @@ app.get('/', (req, res) => {
       organes: '/api/organes',
       pieces: '/api/pieces',
       problems: '/api/problems',
-      priorities: '/api/priorities',
       statuses: '/api/statuses',
-      tickets: '/api/tickets'
+      tickets: '/api/tickets',
+      domaines: '/api/domaines'
     }
   });
 });
@@ -37,9 +37,9 @@ app.use('/api/machines', machinesRouter);
 app.use('/api/organes', organesRouter);
 app.use('/api/pieces', piecesRouter);
 app.use('/api/problems', problemsRouter);
-app.use('/api/priorities', prioritiesRouter);
 app.use('/api/statuses', statusesRouter);
 app.use('/api/tickets', ticketsRouter);
+app.use('/api/domaines', domainesRouter);
 
 app.listen(PORT, () => {
   console.log(`Serveur lancé sur http://localhost:${PORT}`);

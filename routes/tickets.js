@@ -2,16 +2,47 @@ const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
 
-// GET all tickets (optional filters: status_id, priority_id, machine_id, assigned_to, created_by, debut_problem)
+async function getDomainesForTicketIds(ticketIds) {
+  if (!ticketIds.length) return {};
+
+  const placeholders = ticketIds.map(() => '?').join(', ');
+  const [rows] = await db.query(
+    `SELECT td.ticket_id, d.id, d.nom
+     FROM ticket_domaine td
+     INNER JOIN domaine d ON d.id = td.domaine_id
+     WHERE td.ticket_id IN (${placeholders})`,
+    ticketIds
+  );
+
+  const domainesByTicket = {};
+  for (const row of rows) {
+    if (!domainesByTicket[row.ticket_id]) domainesByTicket[row.ticket_id] = [];
+    domainesByTicket[row.ticket_id].push({ id: row.id, nom: row.nom });
+  }
+  return domainesByTicket;
+}
+
+async function syncTicketDomaines(ticketId, domaineIds, connection = db) {
+  await connection.query('DELETE FROM ticket_domaine WHERE ticket_id = ?', [ticketId]);
+
+  if (!Array.isArray(domaineIds) || domaineIds.length === 0) return;
+
+  const values = domaineIds.map((domaineId) => [ticketId, domaineId]);
+  await connection.query(
+    'INSERT INTO ticket_domaine (ticket_id, domaine_id) VALUES ?',
+    [values]
+  );
+}
+
+// GET all tickets (optional filters: status_id, machine_id, assigned_to, created_by, debut_problem)
 router.get('/', async (req, res) => {
   try {
-    const { status_id, priority_id, machine_id, assigned_to, created_by, type_maintenance, debut_problem } = req.query;
+    const { status_id, machine_id, assigned_to, created_by, type_maintenance, debut_problem } = req.query;
     let query = `
-      SELECT t.*, s.name as status_name, p.name as priority_name, m.name as machine_name,
+      SELECT t.*, s.name as status_name, m.name as machine_name,
         u1.name as created_by_name, u2.name as assigned_to_name
       FROM tickets t
       LEFT JOIN statuses s ON t.status_id = s.id
-      LEFT JOIN priorities p ON t.priority_id = p.id
       LEFT JOIN machines m ON t.machine_id = m.id
       LEFT JOIN users u1 ON t.created_by = u1.id
       LEFT JOIN users u2 ON t.assigned_to = u2.id
@@ -19,7 +50,6 @@ router.get('/', async (req, res) => {
     const params = [];
     const conditions = [];
     if (status_id) { conditions.push('t.status_id = ?'); params.push(status_id); }
-    if (priority_id) { conditions.push('t.priority_id = ?'); params.push(priority_id); }
     if (machine_id) { conditions.push('t.machine_id = ?'); params.push(machine_id); }
     if (assigned_to) { conditions.push('t.assigned_to = ?'); params.push(assigned_to); }
     if (created_by) { conditions.push('t.created_by = ?'); params.push(created_by); }
@@ -27,7 +57,16 @@ router.get('/', async (req, res) => {
     if (debut_problem) { conditions.push('t.debut_problem = ?'); params.push(debut_problem); }
     if (conditions.length) query += ' WHERE ' + conditions.join(' AND ');
     const [rows] = await db.query(query, params);
-    res.json(rows);
+
+    const ticketIds = rows.map((row) => row.id);
+    const domainesByTicket = await getDomainesForTicketIds(ticketIds);
+    const tickets = rows.map((row) => ({
+      ...row,
+      domaines: domainesByTicket[row.id] || [],
+      domaine_ids: (domainesByTicket[row.id] || []).map((domaine) => domaine.id)
+    }));
+
+    res.json(tickets);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -37,12 +76,11 @@ router.get('/', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const [rows] = await db.query(
-      `SELECT t.*, s.name as status_name, p.name as priority_name, pr.title as problem_title,
+      `SELECT t.*, s.name as status_name, pr.title as problem_title,
         m.name as machine_name, o.name as organe_name, pi.name as piece_name,
         u1.name as created_by_name, u2.name as assigned_to_name
       FROM tickets t
       LEFT JOIN statuses s ON t.status_id = s.id
-      LEFT JOIN priorities p ON t.priority_id = p.id
       LEFT JOIN problems pr ON t.problem_id = pr.id
       LEFT JOIN machines m ON t.machine_id = m.id
       LEFT JOIN organes o ON t.organe_id = o.id
@@ -53,7 +91,15 @@ router.get('/:id', async (req, res) => {
       [req.params.id]
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Ticket not found' });
-    res.json(rows[0]);
+
+    const ticket = rows[0];
+    const domainesByTicket = await getDomainesForTicketIds([ticket.id]);
+    const domaines = domainesByTicket[ticket.id] || [];
+    res.json({
+      ...ticket,
+      domaines,
+      domaine_ids: domaines.map((domaine) => domaine.id)
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -63,22 +109,36 @@ router.get('/:id', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const {
-      title, description, status_id, priority_id, problem_id,
+      title, description, status_id, problem_id,
       machine_id, organe_id, piece_id, created_by, assigned_to,
-      type_maintenance, debut_problem
+      type_maintenance, debut_problem, domaine_ids
     } = req.body;
     const typeMaintenance = type_maintenance || 'Corrective';
-    const [result] = await db.query(
-      `INSERT INTO tickets (title, description, status_id, priority_id, problem_id, machine_id, organe_id, piece_id, created_by, assigned_to, type_maintenance, debut_problem)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [title, description, status_id, priority_id, problem_id || null, machine_id, organe_id || null, piece_id || null, created_by || null, assigned_to || null, typeMaintenance, debut_problem || null]
-    );
+    const connection = await db.getConnection();
+    let result;
+    try {
+      await connection.beginTransaction();
+      [result] = await connection.query(
+        `INSERT INTO tickets (title, description, status_id, problem_id, machine_id, organe_id, piece_id, created_by, assigned_to, type_maintenance, debut_problem)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [title, description, status_id, problem_id || null, machine_id, organe_id || null, piece_id || null, created_by || null, assigned_to || null, typeMaintenance, debut_problem || null]
+      );
+      await syncTicketDomaines(result.insertId, domaine_ids, connection);
+      await connection.commit();
+    } catch (err) {
+      await connection.rollback();
+      throw err;
+    } finally {
+      connection.release();
+    }
+
     res.status(201).json({
       id: result.insertId,
-      title, description, status_id, priority_id, problem_id,
+      title, description, status_id, problem_id,
       machine_id, organe_id, piece_id, created_by, assigned_to,
       type_maintenance: typeMaintenance,
-      debut_problem: debut_problem || null
+      debut_problem: debut_problem || null,
+      domaine_ids: Array.isArray(domaine_ids) ? domaine_ids : []
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -89,15 +149,14 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
   try {
     const {
-      title, description, status_id, priority_id, problem_id,
-      machine_id, organe_id, piece_id, assigned_to, type_maintenance, debut_problem
+      title, description, status_id, problem_id,
+      machine_id, organe_id, piece_id, assigned_to, type_maintenance, debut_problem, domaine_ids
     } = req.body;
     const updates = ['updated_at = NOW()'];
     const values = [];
     if (title !== undefined) { updates.push('title = ?'); values.push(title); }
     if (description !== undefined) { updates.push('description = ?'); values.push(description); }
     if (status_id !== undefined) { updates.push('status_id = ?'); values.push(status_id); }
-    if (priority_id !== undefined) { updates.push('priority_id = ?'); values.push(priority_id); }
     if (problem_id !== undefined) { updates.push('problem_id = ?'); values.push(problem_id); }
     if (machine_id !== undefined) { updates.push('machine_id = ?'); values.push(machine_id); }
     if (organe_id !== undefined) { updates.push('organe_id = ?'); values.push(organe_id); }
@@ -106,8 +165,25 @@ router.put('/:id', async (req, res) => {
     if (type_maintenance !== undefined) { updates.push('type_maintenance = ?'); values.push(type_maintenance); }
     if (debut_problem !== undefined) { updates.push('debut_problem = ?'); values.push(debut_problem); }
     values.push(req.params.id);
-    const [result] = await db.query(`UPDATE tickets SET ${updates.join(', ')} WHERE id = ?`, values);
-    if (result.affectedRows === 0) return res.status(404).json({ error: 'Ticket not found' });
+    const connection = await db.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [result] = await connection.query(`UPDATE tickets SET ${updates.join(', ')} WHERE id = ?`, values);
+      if (result.affectedRows === 0) {
+        await connection.rollback();
+        return res.status(404).json({ error: 'Ticket not found' });
+      }
+      if (domaine_ids !== undefined) {
+        await syncTicketDomaines(req.params.id, domaine_ids, connection);
+      }
+      await connection.commit();
+    } catch (err) {
+      await connection.rollback();
+      throw err;
+    } finally {
+      connection.release();
+    }
+
     res.json({ message: 'Ticket updated' });
   } catch (err) {
     res.status(500).json({ error: err.message });

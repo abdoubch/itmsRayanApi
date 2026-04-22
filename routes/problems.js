@@ -26,12 +26,12 @@ router.get('/:id', async (req, res) => {
 // POST create problem
 router.post('/', async (req, res) => {
   try {
-    const { title, description } = req.body;
+    const { title, description, type } = req.body;
     const [result] = await db.query(
-      'INSERT INTO problems (title, description) VALUES (?, ?)',
-      [title, description]
+      'INSERT INTO problems (title, description, type) VALUES (?, ?, ?)',
+      [title, description, type || null]
     );
-    res.status(201).json({ id: result.insertId, title, description });
+    res.status(201).json({ id: result.insertId, title, description, type: type || null });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -40,11 +40,12 @@ router.post('/', async (req, res) => {
 // PUT update problem
 router.put('/:id', async (req, res) => {
   try {
-    const { title, description } = req.body;
+    const { title, description, type } = req.body;
     const updates = [];
     const values = [];
     if (title !== undefined) { updates.push('title = ?'); values.push(title); }
     if (description !== undefined) { updates.push('description = ?'); values.push(description); }
+    if (type !== undefined) { updates.push('type = ?'); values.push(type); }
     if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
     values.push(req.params.id);
     await db.query(`UPDATE problems SET ${updates.join(', ')} WHERE id = ?`, values);
